@@ -11,11 +11,12 @@ from src.propositions.deduction import *
 # Some inference rules that only use conjunction.
 
 #: Conjunction introduction inference rule
-A_RULE = InferenceRule([Formula.parse("x"), Formula.parse("y")], Formula.parse("(x&y)"))
+A_RULE = InferenceRule([Formula.parse('x'), Formula.parse('y')],
+                       Formula.parse('(x&y)'))
 #: Conjunction elimination (right) inference rule
-AE1_RULE = InferenceRule([Formula.parse("(x&y)")], Formula.parse("y"))
+AE1_RULE = InferenceRule([Formula.parse('(x&y)')], Formula.parse('y'))
 #: Conjunction elimination (left) inference rule
-AE2_RULE = InferenceRule([Formula.parse("(x&y)")], Formula.parse("x"))
+AE2_RULE = InferenceRule([Formula.parse('(x&y)')], Formula.parse('x'))
 
 
 def prove_and_commutativity() -> Proof:
@@ -27,6 +28,13 @@ def prove_and_commutativity() -> Proof:
         the inference rules `A_RULE`, `AE1_RULE`, and `AE2_RULE`.
     """
     # Task 4.7
+    statement = InferenceRule([Formula.parse('(p&q)')], Formula.parse('(q&p)'))
+    rules = {A_RULE, AE1_RULE, AE2_RULE}
+    prf = [Proof.Line(Formula.parse('(p&q)')),
+           Proof.Line(Formula.parse('p'), AE2_RULE, [0]),
+           Proof.Line(Formula.parse('q'), AE1_RULE, [0]),
+           Proof.Line(Formula.parse('(q&p)'), A_RULE, [2, 1])]
+    return Proof(statement, rules, prf)
 
 
 def prove_I0() -> Proof:
@@ -41,10 +49,19 @@ def prove_I0() -> Proof:
         `~propositions.axiomatic_systems.D`.
     """
     # Task 4.8
+    statement = I0
+    rules = {MP, I1, D}
+    prf = [Proof.Line(Formula.parse('(p->(p->p))'), I1, []),
+           Proof.Line(Formula.parse('(p->((p->p)->p))'), I1, []),
+           Proof.Line(Formula.parse('((p->((p->p)->p))->((p->(p->p))->(p->p)))'), D, []),
+           Proof.Line(Formula.parse('((p->(p->p))->(p->p))'), MP, [1, 2]),
+           Proof.Line(Formula.parse('(p->p)'), MP, [0, 3])]
+    return Proof(statement, rules, prf)
 
 
 #: Hypothetical syllogism
-HS = InferenceRule([Formula.parse("(p->q)"), Formula.parse("(q->r)")], Formula.parse("(p->r)"))
+HS = InferenceRule([Formula.parse('(p->q)'), Formula.parse('(q->r)')],
+                   Formula.parse('(p->r)'))
 
 
 def prove_hypothetical_syllogism() -> Proof:
@@ -80,7 +97,7 @@ def prove_I2() -> Proof:
 
 
 #: Double-negation elimination
-_NNE = InferenceRule([], Formula.parse("(~~p->p)"))
+_NNE = InferenceRule([], Formula.parse('(~~p->p)'))
 
 
 def _prove_NNE() -> Proof:
@@ -118,7 +135,7 @@ def prove_NN() -> Proof:
 
 
 #: Contraposition
-_CP = InferenceRule([], Formula.parse("((p->q)->(~q->~p))"))
+_CP = InferenceRule([], Formula.parse('((p->q)->(~q->~p))'))
 
 
 def _prove_CP() -> Proof:
@@ -156,7 +173,7 @@ def prove_NI() -> Proof:
 
 
 #: Consequentia mirabilis
-_CM = InferenceRule([Formula.parse("(~p->p)")], Formula.parse("p"))
+_CM = InferenceRule([Formula.parse('(~p->p)')], Formula.parse('p'))
 
 
 def _prove_CM() -> Proof:

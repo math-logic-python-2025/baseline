@@ -23,17 +23,29 @@
 
 ## Локальное тестирование
 
-### Dependencies
+### Environment
 
-Установите `poetry`, если не установлено:
+Создайте виртуальное окружение:
 ```bash
-pip install poetry
+python3 -m venv venv
 ```
 
-Установите зависимости:
+Активируйте его (Linux/Mac):
 ```bash
-poetry install
+source venv/bin/activate
 ```
+
+Активируйте его (Windows):
+```bash
+venv\Scripts\activate
+```
+
+Установите `pytest`:
+```bash
+pip install pytest
+```
+
+### Запускаем тесты
 
 Полное тестирование всех ДЗ:
 ```bash
