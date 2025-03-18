@@ -77,6 +77,24 @@ def prove_hypothetical_syllogism() -> Proof:
         `~propositions.axiomatic_systems.D`.
     """
     # Task 5.5
+    return remove_assumption(Proof(
+        InferenceRule(
+            (
+                Formula.parse('(p->q)'),
+                Formula.parse('(q->r)'),
+                Formula.parse('p')
+            ),
+            Formula.parse('r')
+        ),
+        {MP},
+        (
+            Proof.Line(Formula.parse('p')),
+            Proof.Line(Formula.parse('(p->q)')),
+            Proof.Line(Formula.parse('(q->r)')),
+            Proof.Line(Formula.parse('q'), MP, [0, 1]),
+            Proof.Line(Formula.parse('r'), MP, [3, 2])
+        )
+    ))
 
 
 def prove_I2() -> Proof:

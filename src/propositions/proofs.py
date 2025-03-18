@@ -310,8 +310,7 @@ class Proof:
                    (rule is not None and assumptions is not None)
             self.formula = formula
             self.rule = rule
-            if assumptions is not None:
-                self.assumptions = tuple(assumptions)
+            self.assumptions = tuple(assumptions) if assumptions is not None else None
 
         def __repr__(self) -> str:
             """Computes a string representation of the current line.
@@ -448,7 +447,14 @@ def prove_specialization(proof: Proof, specialization: InferenceRule) -> Proof:
     """
     assert proof.is_valid()
     assert specialization.is_specialization_of(proof.statement)
+
     # Task 5.1
+    specialization_map = proof.statement.specialization_map(specialization)
+    new_lines = []
+    for line in proof.lines:
+        new_formula = line.formula.substitute_variables(specialization_map)
+        new_lines.append(Proof.Line(new_formula, line.rule, line.assumptions))
+    return Proof(specialization, proof.rules, new_lines)
 
 
 def _inline_proof_once(main_proof: Proof, line_number: int,
@@ -480,6 +486,33 @@ def _inline_proof_once(main_proof: Proof, line_number: int,
     assert main_proof.lines[line_number].rule == lemma_proof.statement
     assert lemma_proof.is_valid()
     # Task 5.2a
+    main_line = main_proof.lines[line_number]
+    partial_proof = prove_specialization(lemma_proof, main_proof.rule_for_line(line_number))
+
+    new_lines = list(main_proof.lines[:line_number])
+    assumptions_count = 0
+    subs = {}
+
+    for i, line in enumerate(partial_proof.lines):
+        if line.is_assumption():
+            index = partial_proof.statement.assumptions.index(line.formula)
+            subs[i] = main_line.assumptions[index]
+            assumptions_count += 1
+        else:
+            new_assumptions = [subs[j] for j in line.assumptions]
+            subs[i] = len(new_lines)
+            new_lines.append(Proof.Line(line.formula, line.rule, new_assumptions))
+
+    offset = len(partial_proof.lines) - assumptions_count - 1
+
+    for i, line in enumerate(main_proof.lines[line_number + 1:]):
+        if line.is_assumption():
+            new_lines.append(line)
+        else:
+            new_assumptions = [j if j < line_number else j + offset for j in line.assumptions]
+            new_lines.append(Proof.Line(line.formula, line.rule, new_assumptions))
+
+    return Proof(main_proof.statement, main_proof.rules | lemma_proof.rules, new_lines)
 
 
 def inline_proof(main_proof: Proof, lemma_proof: Proof) -> Proof:
@@ -503,3 +536,14 @@ def inline_proof(main_proof: Proof, lemma_proof: Proof) -> Proof:
     assert main_proof.is_valid()
     assert lemma_proof.is_valid()
     # Task 5.2b
+    new_proof = main_proof
+    while True:
+        for i, line in enumerate(new_proof.lines):
+            if not line.is_assumption() and line.rule == lemma_proof.statement:
+                new_proof = _inline_proof_once(new_proof, i, lemma_proof)
+                break
+        else:
+            break
+
+    return Proof(new_proof.statement, new_proof.rules - {lemma_proof.statement}, new_proof.lines)
+
