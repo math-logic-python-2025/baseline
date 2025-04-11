@@ -6,7 +6,7 @@
 
 """The Tautology Theorem and its implications."""
 
-from typing import List
+from typing import List, Tuple, Union, Sequence
 
 from src.logic_utils import frozendict
 
@@ -32,7 +32,87 @@ def formulas_capturing_model(model: Model) -> List[Formula]:
         [p1, ~p2, q]
     """
     assert is_model(model)
+
     # Task 6.1a
+    capturing_formulas = []
+    for var in sorted(model.keys()):
+        if model[var]:
+            capturing_formulas.append(Formula.parse(var))
+        else:
+            capturing_formulas.append(Formula.parse(f"~{var}"))
+    return capturing_formulas
+
+
+def _prove_in_formula(formula: Formula, model: Model, proof_lines: list[Proof.Line]) -> Tuple[int, bool]:
+    """
+    Recursively adds proof lines for the given formula according to the model.
+
+    Returns a tuple containing:
+      - The index of the last added proof line.
+      - The truth value (according to `model`) of the given formula.
+    """
+    if is_variable(formula.root):
+        # Base case: formula is a single variable.
+        if model[formula.root]:
+            proof_lines.append(Proof.Line(Formula.parse(formula.root)))
+        else:
+            proof_lines.append(Proof.Line(Formula.parse(f"~{formula.root}")))
+        return len(proof_lines) - 1, model[formula.root]
+
+    if formula.root == '->':
+        # Recursively prove the antecedent and consequent.
+        left_index, left_truth = _prove_in_formula(formula.first, model, proof_lines)
+        right_index, right_truth = _prove_in_formula(formula.second, model, proof_lines)
+
+        if not left_truth:
+            # Using inference I2.
+            proof_lines.append(Proof.Line(
+                I2.conclusion.substitute_variables({"p": formula.first, "q": formula.second}),
+                I2, []
+            ))
+            proof_lines.append(Proof.Line(
+                formula,
+                MP, [left_index, len(proof_lines) - 1]
+            ))
+        elif right_truth:
+            # Using inference I1.
+            proof_lines.append(Proof.Line(
+                I1.conclusion.substitute_variables({"p": formula.first, "q": formula.second}),
+                I1, []
+            ))
+            proof_lines.append(Proof.Line(
+                formula,
+                MP, [right_index, len(proof_lines) - 1]
+            ))
+        else:
+            # Using inference NI.
+            proof_lines.append(Proof.Line(
+                NI.conclusion.substitute_variables({"p": formula.first, "q": formula.second}),
+                NI, []
+            ))
+            proof_lines.append(Proof.Line(
+                NI.conclusion.substitute_variables({"p": formula.first, "q": formula.second}).second,
+                MP, [left_index, len(proof_lines) - 1]
+            ))
+            proof_lines.append(Proof.Line(
+                Formula("~", formula),
+                MP, [right_index, len(proof_lines) - 1]
+            ))
+
+        return len(proof_lines) - 1, left_truth <= right_truth
+
+    # Case: formula.root == '~'
+    inner_index, inner_truth = _prove_in_formula(formula.first, model, proof_lines)
+    if inner_truth:
+        proof_lines.append(Proof.Line(
+            NN.conclusion.substitute_variables({"p": formula.first}),
+            NN, []
+        ))
+        proof_lines.append(Proof.Line(
+            Formula("~", formula),
+            MP, [inner_index, len(proof_lines) - 1]
+        ))
+    return len(proof_lines) - 1, not inner_truth
 
 
 def prove_in_model(formula: Formula, model: Model) -> Proof:
@@ -76,7 +156,12 @@ def prove_in_model(formula: Formula, model: Model) -> Proof:
     """
     assert formula.operators().issubset({"->", "~"})
     assert is_model(model)
+
     # Task 6.1b
+    assumptions = formulas_capturing_model(model)
+    proof_lines: list[Proof.Line] = []
+    _prove_in_formula(formula, model, proof_lines)
+    return Proof(InferenceRule(assumptions, proof_lines[-1].formula), AXIOMATIC_SYSTEM, proof_lines)
 
 
 def reduce_assumption(proof_from_affirmation: Proof, proof_from_negation: Proof) -> Proof:
@@ -116,10 +201,16 @@ def reduce_assumption(proof_from_affirmation: Proof, proof_from_negation: Proof)
     assert len(proof_from_negation.statement.assumptions) > 0
     assert proof_from_affirmation.statement.assumptions[:-1] == proof_from_negation.statement.assumptions[:-1]
     assert (
-        Formula("~", proof_from_affirmation.statement.assumptions[-1]) == proof_from_negation.statement.assumptions[-1]
+            Formula("~", proof_from_affirmation.statement.assumptions[-1]) ==
+            proof_from_negation.statement.assumptions[-1]
     )
     assert proof_from_affirmation.rules == proof_from_negation.rules
+
     # Task 6.2
+    common_proof_affirm = remove_assumption(proof_from_affirmation)
+    common_proof_negate = remove_assumption(proof_from_negation)
+    common_conclusion = proof_from_affirmation.statement.conclusion
+    return combine_proofs(common_proof_affirm, common_proof_negate, common_conclusion, R)
 
 
 def prove_tautology(tautology: Formula, model: Model = frozendict()) -> Proof:
@@ -164,8 +255,16 @@ def prove_tautology(tautology: Formula, model: Model = frozendict()) -> Proof:
     assert is_tautology(tautology)
     assert tautology.operators().issubset({"->", "~"})
     assert is_model(model)
-    assert sorted(tautology.variables())[: len(model)] == sorted(model.keys())
+    sorted_vars = sorted(tautology.variables())
+    assert sorted_vars[: len(model)] == sorted(model.keys())
+
     # Task 6.3a
+    if len(model) == len(sorted_vars):
+        return prove_in_model(tautology, model)
+
+    proof_affirm = prove_tautology(tautology, model | {sorted_vars[len(model)]: True})
+    proof_negate = prove_tautology(tautology, model | {sorted_vars[len(model)]: False})
+    return reduce_assumption(proof_affirm, proof_negate)
 
 
 def proof_or_counterexample(formula: Formula) -> Union[Proof, Model]:
@@ -182,7 +281,13 @@ def proof_or_counterexample(formula: Formula) -> Union[Proof, Model]:
         otherwise a model in which the given formula does not hold.
     """
     assert formula.operators().issubset({"->", "~"})
+
     # Task 6.3b
+    for candidate_model in all_models(formula.variables()):
+        if not evaluate(formula, candidate_model):
+            return candidate_model
+
+    return prove_tautology(formula)
 
 
 def encode_as_formula(rule: InferenceRule) -> Formula:
@@ -205,6 +310,10 @@ def encode_as_formula(rule: InferenceRule) -> Formula:
         q
     """
     # Task 6.4a
+    encoded_formula = rule.conclusion
+    for assumption in rule.assumptions[::-1]:
+        encoded_formula = Formula('->', assumption, encoded_formula)
+    return encoded_formula
 
 
 def prove_sound_inference(rule: InferenceRule) -> Proof:
@@ -221,7 +330,22 @@ def prove_sound_inference(rule: InferenceRule) -> Proof:
     assert is_sound_inference(rule)
     for formula in {rule.conclusion}.union(rule.assumptions):
         assert formula.operators().issubset({"->", "~"})
+
     # Task 6.4b
+    encoded_rule_formula = encode_as_formula(rule)
+    tautology_proof = prove_tautology(encoded_rule_formula)
+    proof_lines = list(tautology_proof.lines)
+    base_index = len(proof_lines) - 1
+
+    for i, assumption in enumerate(rule.assumptions):
+        proof_lines.append(Proof.Line(assumption))
+        # Using MP with the new assumption line and corresponding earlier line.
+        proof_lines.append(Proof.Line(
+            proof_lines[base_index + 2 * i].formula.second,
+            MP, [base_index + 2 * i + 1, base_index + 2 * i]
+        ))
+
+    return Proof(rule, tautology_proof.rules, proof_lines)
 
 
 def model_or_inconsistency(formulas: Sequence[Formula]) -> Union[Model, Proof]:
@@ -239,7 +363,17 @@ def model_or_inconsistency(formulas: Sequence[Formula]) -> Union[Model, Proof]:
     """
     for formula in formulas:
         assert formula.operators().issubset({"->", "~"})
+
     # Task 6.5
+    all_vars = set()
+    for formula in formulas:
+        all_vars |= formula.variables()
+
+    for candidate_model in all_models(all_vars):
+        if all(evaluate(formula, candidate_model) for formula in formulas):
+            return candidate_model
+
+    return prove_sound_inference(InferenceRule(formulas, Formula.parse("~(p->p)")))
 
 
 def prove_in_model_full(formula: Formula, model: Model) -> Proof:
