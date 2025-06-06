@@ -7,13 +7,30 @@
 """Schemas and proofs in Predicate Logic."""
 
 from __future__ import annotations
-from typing import FrozenSet
 
+from typing import FrozenSet, Mapping, AbstractSet, Union, Sequence
+
+from src.logic_utils import frozen
 from src.logic_utils import frozendict
-
+from src.predicates.functions import function_name_to_relation_name
+from src.predicates.syntax import (
+    Formula,
+    Term,
+    is_constant,
+    is_variable,
+    is_relation,
+    is_equality,
+    is_unary,
+    is_binary,
+    is_quantifier,
+    ForbiddenVariableError,
+)
 from src.propositions.semantics import is_tautology as is_propositional_tautology
-
-from src.predicates.syntax import *
+from src.propositions.syntax import (
+    Formula as PropositionalFormula,
+)
+from src.propositions.syntax import is_variable as is_propositional_variable
+from src.propositions.tautology import prove_tautology as prove_propositional_tautology
 
 #: A mapping from constant names, variable names, and relation names to
 #: terms, variable names, and formulas respectively.
@@ -51,7 +68,11 @@ class Schema:
         for template in templates:
             assert is_constant(template) or is_variable(template) or is_relation(template)
             if is_relation(template):
-                arities = {arity for relation, arity in formula.relations() if relation == template}
+                arities = {
+                    arity
+                    for relation, arity in formula.relations()
+                    if relation == template
+                }
                 assert arities == {0} or arities == {1}
         self.formula = formula
         self.templates = frozenset(templates)
@@ -63,11 +84,11 @@ class Schema:
             A string representation of the current schema.
         """
         return (
-            "Schema: "
-            + str(self.formula)
-            + " [templates: "
-            + ("none" if len(self.templates) == 0 else ", ".join(sorted(self.templates)))
-            + "]"
+                "Schema: "
+                + str(self.formula)
+                + " [templates: "
+                + ("none" if not self.templates else ", ".join(sorted(self.templates)))
+                + "]"
         )
 
     def __eq__(self, other: object) -> bool:
@@ -80,7 +101,11 @@ class Schema:
             ``True`` if the given object is a `Schema` object that equals the
             current schema, ``False`` otherwise.
         """
-        return isinstance(other, Schema) and self.formula == other.formula and self.templates == other.templates
+        return (
+                isinstance(other, Schema)
+                and self.formula == other.formula
+                and self.templates == other.templates
+        )
 
     def __ne__(self, other: object) -> bool:
         """Compares the current schema with the given one.
@@ -130,10 +155,10 @@ class Schema:
 
     @staticmethod
     def _instantiate_helper(
-        formula: Formula,
-        constants_and_variables_instantiation_map: Mapping[str, Term],
-        relations_instantiation_map: Mapping[str, Formula],
-        bound_variables: AbstractSet[str] = frozenset(),
+            formula: Formula,
+            const_var_map: Mapping[str, Term],
+            rel_map: Mapping[str, Formula],
+            bound_vars: AbstractSet[str] = frozenset(),
     ) -> Formula:
         """Performs the following substitutions in the given formula:
 
@@ -234,15 +259,83 @@ class Schema:
               ...
             predicates.proofs.Schema.BoundVariableError: ('y', 'Q')
         """
-        for construct in constants_and_variables_instantiation_map:
-            assert is_constant(construct) or is_variable(construct)
-            if is_variable(construct):
-                assert is_variable(constants_and_variables_instantiation_map[construct].root)
-        for relation in relations_instantiation_map:
-            assert is_relation(relation)
-        for variable in bound_variables:
-            assert is_variable(variable)
-        # Task 9.3
+        # Validate maps
+        for const_or_var in const_var_map:
+            assert is_constant(const_or_var) or is_variable(const_or_var)
+            if is_variable(const_or_var):
+                term = const_var_map[const_or_var]
+                assert is_variable(term.root)
+        for rel in rel_map:
+            assert is_relation(rel)
+        for v in bound_vars:
+            assert is_variable(v)
+
+        # Base case: equality or non-instantiated relation
+        if is_equality(formula.root) or (
+                is_relation(formula.root) and formula.root not in rel_map
+        ):
+            return formula.substitute(const_var_map, set())
+
+        # Relation that must be instantiated
+        if is_relation(formula.root):
+            assert len(formula.arguments) <= 1
+            target_formula = rel_map[formula.root]
+            # Check for bound-variable conflicts
+            conflict_vars = target_formula.free_variables() & bound_vars
+            if conflict_vars:
+                raise Schema.BoundVariableError(next(iter(conflict_vars)), formula.root)
+
+            # Nullary case
+            if not formula.arguments:
+                return target_formula
+
+            # Unary case: instantiate argument then plug into target formula
+            arg_term = formula.arguments[0]
+            instantiated_arg = arg_term.substitute(const_var_map, set())
+            return target_formula.substitute({'_': instantiated_arg}, set())
+
+        # Unary operator: recurse on operand
+        if is_unary(formula.root):
+            operand_inst = Schema._instantiate_helper(
+                formula.first,
+                const_var_map,
+                rel_map,
+                bound_vars
+            )
+            return Formula(formula.root, operand_inst)
+
+        # Binary operator: recurse on both sides
+        if is_binary(formula.root):
+            left_inst = Schema._instantiate_helper(
+                formula.first,
+                const_var_map,
+                rel_map,
+                bound_vars
+            )
+            right_inst = Schema._instantiate_helper(
+                formula.second,
+                const_var_map,
+                rel_map,
+                bound_vars
+            )
+            return Formula(formula.root, left_inst, right_inst)
+
+        # Quantifier: possibly rename bound variable, then recurse
+        if is_quantifier(formula.root):
+            bound_var = formula.variable
+            # If the bound variable itself is instantiated, use the mapped variable
+            if bound_var in const_var_map:
+                bound_var = const_var_map[bound_var].root
+            new_bound_vars = bound_vars | {bound_var}
+            instantiated_stmt = Schema._instantiate_helper(
+                formula.statement,
+                const_var_map,
+                rel_map,
+                new_bound_vars
+            )
+            return Formula(formula.root, bound_var, instantiated_stmt)
+
+        assert False, "Unknown type of formula."
 
     def instantiate(self, instantiation_map: InstantiationMap) -> Union[Formula, None]:
         """Instantiates the current schema according to the given map from
@@ -347,15 +440,36 @@ class Schema:
             ...                'Q': Formula.parse('Ay[s(y)=_]'),
             ...                'c': Term.parse('plus(a,y)')})
         """
-        for construct in instantiation_map:
-            if is_variable(construct):
-                assert is_variable(instantiation_map[construct])
-            elif is_constant(construct):
-                assert isinstance(instantiation_map[construct], Term)
+        # Validate instantiation_map types
+        for key, val in instantiation_map.items():
+            if is_variable(key):
+                assert isinstance(val, str) and is_variable(val)
+            elif is_constant(key):
+                assert isinstance(val, Term)
             else:
-                assert is_relation(construct)
-                assert isinstance(instantiation_map[construct], Formula)
-        # Task 9.4
+                assert is_relation(key)
+                assert isinstance(val, Formula)
+
+        # Ensure all keys are declared templates
+        if not set(instantiation_map).issubset(self.templates):
+            return None
+
+        # Separate variable/constant replacements from relation replacements
+        var_const_map: dict[str, Term] = {}
+        rel_map: dict[str, Formula] = {}
+        for key, val in instantiation_map.items():
+            if is_variable(key):
+                # Turn variable name (string) into a Term
+                var_const_map[key] = Term(val)
+            elif is_constant(key):
+                var_const_map[key] = val  # type: ignore
+            else:
+                rel_map[key] = val  # type: ignore
+
+        try:
+            return Schema._instantiate_helper(self.formula, var_const_map, rel_map, set())
+        except (Schema.BoundVariableError, ForbiddenVariableError):
+            return None
 
 
 @frozen
@@ -375,13 +489,13 @@ class Proof:
 
     assumptions: FrozenSet[Schema]
     conclusion: Formula
-    lines: Tuple[Proof.Line, ...]
+    lines: tuple[Proof.Line, ...]
 
     def __init__(
-        self,
-        assumptions: AbstractSet[Schema],
-        conclusion: Formula,
-        lines: Sequence[Proof.Line],
+            self,
+            assumptions: AbstractSet[Schema],
+            conclusion: Formula,
+            lines: Sequence[Proof.Line],
     ):
         """Initializes a `Proof` from its assumptions/axioms, conclusion,
         and lines.
@@ -414,10 +528,10 @@ class Proof:
         instantiation_map: InstantiationMap
 
         def __init__(
-            self,
-            formula: Formula,
-            assumption: Schema,
-            instantiation_map: InstantiationMap,
+                self,
+                formula: Formula,
+                assumption: Schema,
+                instantiation_map: InstantiationMap,
         ):
             """Initializes an `~Proof.AssumptionLine` from its formula, its
             justifying assumption/axiom, and its instantiation map from the
@@ -429,14 +543,14 @@ class Proof:
                 instantiation_map: the mapping instantiating the formula from
                     the assumption/axiom.
             """
-            for construct in instantiation_map:
-                if is_variable(construct):
-                    assert is_variable(instantiation_map[construct])
-                elif is_constant(construct):
-                    assert isinstance(instantiation_map[construct], Term)
+            for key, val in instantiation_map.items():
+                if is_variable(key):
+                    assert isinstance(val, str) and is_variable(val)
+                elif is_constant(key):
+                    assert isinstance(val, Term)
                 else:
-                    assert is_relation(construct)
-                    assert isinstance(instantiation_map[construct], Formula)
+                    assert is_relation(key)
+                    assert isinstance(val, Formula)
             self.formula = formula
             self.assumption = assumption
             self.instantiation_map = frozendict(instantiation_map)
@@ -448,19 +562,19 @@ class Proof:
                 A string representation of the current line.
             """
             return (
-                str(self.formula)
-                + "    (Assumption "
-                + str(self.assumption)
-                + " instantiated with "
-                + str(self.instantiation_map)
-                + ")"
+                    str(self.formula)
+                    + "    (Assumption "
+                    + str(self.assumption)
+                    + " instantiated with "
+                    + str(self.instantiation_map)
+                    + ")"
             )
 
         def is_valid(
-            self,
-            assumptions: AbstractSet[Schema],
-            lines: Sequence[Proof.Line],
-            line_number: int,
+                self,
+                assumptions: AbstractSet[Schema],
+                lines: Sequence[Proof.Line],
+                line_number: int,
         ) -> bool:
             """Checks if the current line is validly justified in the context of
             the specified proof.
@@ -477,8 +591,13 @@ class Proof:
                 assumption/axiom via the instantiation map of the current line,
                 ``False`` otherwise.
             """
-            assert line_number < len(lines) and lines[line_number] is self
+            assert 0 <= line_number < len(lines) and lines[line_number] is self
+
             # Task 9.5
+            if self.assumption not in assumptions:
+                return False
+            instantiated = self.assumption.instantiate(self.instantiation_map)
+            return instantiated == self.formula
 
     @frozen
     class MPLine:
@@ -499,10 +618,10 @@ class Proof:
         conditional_line_number: int
 
         def __init__(
-            self,
-            formula: Formula,
-            antecedent_line_number: int,
-            conditional_line_number: int,
+                self,
+                formula: Formula,
+                antecedent_line_number: int,
+                conditional_line_number: int,
         ):
             """Initializes a `~Proof.MPLine` from its formula and line numbers
             of the antecedent and conditional of the MP inference justifying it.
@@ -525,19 +644,19 @@ class Proof:
                 A string representation of the current line.
             """
             return (
-                str(self.formula)
-                + "    (MP from lines "
-                + str(self.antecedent_line_number)
-                + " and "
-                + str(self.conditional_line_number)
-                + ")"
+                    str(self.formula)
+                    + "    (MP from lines "
+                    + str(self.antecedent_line_number)
+                    + " and "
+                    + str(self.conditional_line_number)
+                    + ")"
             )
 
         def is_valid(
-            self,
-            assumptions: AbstractSet[Schema],
-            lines: Sequence[Proof.Line],
-            line_number: int,
+                self,
+                assumptions: AbstractSet[Schema],
+                lines: Sequence[Proof.Line],
+                line_number: int,
         ) -> bool:
             """Checks if the current line is validly justified in the context of
             the specified proof.
@@ -556,8 +675,23 @@ class Proof:
                 current line and `consequent` is the formula justified by the
                 current line; ``False`` otherwise.
             """
-            assert line_number < len(lines) and lines[line_number] is self
+            assert 0 <= line_number < len(lines) and lines[line_number] is self
+
             # Task 9.6
+            if (
+                    self.antecedent_line_number >= line_number
+                    or self.conditional_line_number >= line_number
+            ):
+                return False
+
+            antecedent_line = lines[self.antecedent_line_number]
+            conditional_line = lines[self.conditional_line_number]
+            cond_formula = conditional_line.formula
+            return (
+                    cond_formula.root == "->"
+                    and cond_formula.first == antecedent_line.formula
+                    and cond_formula.second == self.formula
+            )
 
     @frozen
     class UGLine:
@@ -595,10 +729,10 @@ class Proof:
             return str(self.formula) + "    (UG of line " + str(self.nonquantified_line_number) + ")"
 
         def is_valid(
-            self,
-            assumptions: AbstractSet[Schema],
-            lines: Sequence[Proof.Line],
-            line_number: int,
+                self,
+                assumptions: AbstractSet[Schema],
+                lines: Sequence[Proof.Line],
+                line_number: int,
         ) -> bool:
             """Checks if the current line is validly justified in the context of
             the specified proof.
@@ -615,8 +749,16 @@ class Proof:
                 whose number is the nonquantified line number justifying the
                 current line and `x` is any variable name; ``False`` otherwise.
             """
-            assert line_number < len(lines) and lines[line_number] is self
+            assert 0 <= line_number < len(lines) and lines[line_number] is self
+
             # Task 9.7
+            if self.nonquantified_line_number >= line_number:
+                return False
+
+            return (
+                    self.formula.root == "A"
+                    and lines[self.nonquantified_line_number].formula == self.formula.statement
+            )
 
     @frozen
     class TautologyLine:
@@ -646,10 +788,10 @@ class Proof:
             return str(self.formula) + "    (Tautology)"
 
         def is_valid(
-            self,
-            assumptions: AbstractSet[Schema],
-            lines: Sequence[Proof.Line],
-            line_number: int,
+                self,
+                assumptions: AbstractSet[Schema],
+                lines: Sequence[Proof.Line],
+                line_number: int,
         ) -> bool:
             """Checks if the current line is validly justified in the context of
             the specified proof.
@@ -663,8 +805,11 @@ class Proof:
                 ``True`` if the formula justified by the current line is a
                 (predicate-logic) tautology, ``False`` otherwise.
             """
-            assert line_number < len(lines) and lines[line_number] is self
+            assert 0 <= line_number < len(lines) and lines[line_number] is self
+
             # Task 9.9
+            skeleton = self.formula.propositional_skeleton()[0]
+            return is_propositional_tautology(skeleton)
 
     #: An immutable proof line.
     Line = Union[AssumptionLine, MPLine, UGLine, TautologyLine]
@@ -679,8 +824,8 @@ class Proof:
         for assumption in self.assumptions:
             r += "  " + str(assumption) + "\n"
         r += "Lines:\n"
-        for i in range(len(self.lines)):
-            r += ("%3d) " % i) + str(self.lines[i]) + "\n"
+        for idx, line in enumerate(self.lines):
+            r += f"{idx:3d}) {line}\n"
         r += "QED\n"
         return r
 
@@ -693,10 +838,10 @@ class Proof:
             conclusion from (instances of) its assumptions/axioms, ``False``
             otherwise.
         """
-        if len(self.lines) == 0 or self.lines[-1].formula != self.conclusion:
+        if not self.lines or self.lines[-1].formula != self.conclusion:
             return False
-        for line_number in range(len(self.lines)):
-            if not self.lines[line_number].is_valid(self.assumptions, self.lines, line_number):
+        for i, line in enumerate(self.lines):
+            if not line.is_valid(self.assumptions, self.lines, i):
                 return False
         return True
 
@@ -715,6 +860,7 @@ from src.propositions.axiomatic_systems import (
     NI,
     NN,
     R,
+    MP,
 )
 
 # Schema equivalents of the propositional-logic axioms for implication and
@@ -728,7 +874,10 @@ I0_SCHEMA = Schema(Formula.parse("(P()->P())"), {"P"})
 I1_SCHEMA = Schema(Formula.parse("(Q()->(P()->Q()))"), {"P", "Q"})
 #: Schema equivalent of the propositional-logic self-distribution of implication
 #: axiom `~propositions.axiomatic_systems.D`.
-D_SCHEMA = Schema(Formula.parse("((P()->(Q()->R()))->((P()->Q())->(P()->R())))"), {"P", "Q", "R"})
+D_SCHEMA = Schema(
+    Formula.parse("((P()->(Q()->R()))->((P()->Q())->(P()->R())))"),
+    {"P", "Q", "R"},
+)
 #: Schema equivalent of the propositional-logic implication introduction (left)
 #: axiom `~propositions.axiomatic_systems.I2`.
 I2_SCHEMA = Schema(Formula.parse("(~P()->(P()->Q()))"), {"P", "Q"})
@@ -774,8 +923,8 @@ PROPOSITIONAL_AXIOM_TO_SCHEMA = {
 
 
 def _axiom_specialization_map_to_schema_instantiation_map(
-    propositional_specialization_map: PropositionalSpecializationMap,
-    substitution_map: Mapping[str, Formula],
+        propositional_specialization_map: PropositionalSpecializationMap,
+        substitution_map: Mapping[str, Formula],
 ) -> Mapping[str, Formula]:
     """Composes the given propositional-logic specialization map, specifying the
     transformation from a propositional-logic axiom to a specialization of it,
@@ -807,19 +956,27 @@ def _axiom_specialization_map_to_schema_instantiation_map(
         ...      'z2': Formula.parse('R(f(8,9))')})
         {'P': (Ax[(x=5&M())]->R(f(8,9))), 'Q': ~Ax[(x=5&M())]}
     """
-    for variable in propositional_specialization_map:
-        assert is_propositional_variable(variable)
-        for operator in propositional_specialization_map[variable].operators():
-            assert is_unary(operator) or is_binary(operator)
-    for variable in substitution_map:
-        assert is_propositional_variable(variable)
+    # Validate inputs
+    for var, prop_formula in propositional_specialization_map.items():
+        assert is_propositional_variable(var)
+        for op in prop_formula.operators():
+            assert is_unary(op) or is_binary(op)
+    for var in substitution_map:
+        assert is_propositional_variable(var)
+
     # Task 9.11a
+    schema_inst_map: dict[str, Formula] = {}
+    for var, prop_formula in propositional_specialization_map.items():
+        rel_name = function_name_to_relation_name(var)
+        instantiated = Formula.from_propositional_skeleton(prop_formula, substitution_map)
+        schema_inst_map[rel_name] = instantiated
+    return schema_inst_map
 
 
 def _prove_from_skeleton_proof(
-    formula: Formula,
-    skeleton_proof: PropositionalProof,
-    substitution_map: Mapping[str, Formula],
+        formula: Formula,
+        skeleton_proof: PropositionalProof,
+        substitution_map: Mapping[str, Formula],
 ) -> Proof:
     """Translates the given proof of a propositional skeleton of the given
     predicate-logic formula into a proof of that predicate-logic formula.
@@ -842,15 +999,41 @@ def _prove_from_skeleton_proof(
         MP lines.
     """
     assert (
-        len(skeleton_proof.statement.assumptions) == 0
-        and skeleton_proof.rules.issubset(PROPOSITIONAL_AXIOMATIC_SYSTEM)
-        and skeleton_proof.is_valid()
+            len(skeleton_proof.statement.assumptions) == 0
+            and skeleton_proof.rules.issubset(PROPOSITIONAL_AXIOMATIC_SYSTEM)
+            and skeleton_proof.is_valid()
     )
-    assert Formula.from_propositional_skeleton(skeleton_proof.statement.conclusion, substitution_map) == formula
+    reconstructed = Formula.from_propositional_skeleton(
+        skeleton_proof.statement.conclusion, substitution_map
+    )
+    assert reconstructed == formula
     for line in skeleton_proof.lines:
-        for operator in line.formula.operators():
-            assert is_unary(operator) or is_binary(operator)
+        for op in line.formula.operators():
+            assert is_unary(op) or is_binary(op)
+
     # Task 9.11b
+    new_lines: list[Proof.Line] = []
+    for line in skeleton_proof.lines:
+        rule = line.rule
+        if rule is MP:
+            # MPLine: use previously added lines
+            consequent = new_lines[line.assumptions[1]].formula.second
+            new_lines.append(
+                Proof.MPLine(consequent, *line.assumptions)
+            )
+        else:
+            # AssumptionLine: map propositional axiom to schema
+            spec_map = rule._formula_specialization_map(rule.conclusion, line.formula)
+            schema_map = _axiom_specialization_map_to_schema_instantiation_map(
+                spec_map, substitution_map
+            )
+            schema = PROPOSITIONAL_AXIOM_TO_SCHEMA[rule]
+            instantiated_formula = Formula.from_propositional_skeleton(line.formula, substitution_map)
+            new_lines.append(
+                Proof.AssumptionLine(instantiated_formula, schema, schema_map)
+            )
+
+    return Proof(PROPOSITIONAL_AXIOMATIC_SYSTEM_SCHEMAS, formula, new_lines)
 
 
 def prove_tautology(tautology: Formula) -> Proof:
@@ -866,7 +1049,10 @@ def prove_tautology(tautology: Formula) -> Proof:
         `PROPOSITIONAL_AXIOMATIC_SYSTEM_SCHEMAS` via only assumption lines
         and MP lines.
     """
-    skeleton = tautology.propositional_skeleton()[0]
+    skeleton, substitution_map = tautology.propositional_skeleton()
     assert is_propositional_tautology(skeleton)
     assert skeleton.operators().issubset({"->", "~"})
+
     # Task 9.12
+    skeleton_proof = prove_propositional_tautology(skeleton)
+    return _prove_from_skeleton_proof(tautology, skeleton_proof, substitution_map)

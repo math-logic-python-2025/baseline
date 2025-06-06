@@ -14,6 +14,7 @@ from typing import AbstractSet, Mapping, Optional, Sequence, Set, Tuple, Union
 from src.logic_utils import (
     frozen,
     memoized_parameterless_method,
+    fresh_variable_name_generator,
 )
 from src.propositions.syntax import (
     Formula as PropositionalFormula,
@@ -22,6 +23,14 @@ from src.propositions.syntax import (
 
 @lru_cache(maxsize=100)  # Cache the return value of is_binary_prefix
 def is_binary_prefix(string: str) -> bool:
+    """Checks if the given string is a valid binary-operator prefix.
+
+    Parameters:
+        string: string to check.
+
+    Returns:
+        ``True`` if the given string is one of "&", "|", "->", "-", ``False`` otherwise.
+    """
     return string in ("&", "|", "->", "-")
 
 
@@ -73,7 +82,7 @@ def is_variable(string: str) -> bool:
     Returns:
         ``True`` if the given string is a variable name, ``False`` otherwise.
     """
-    return string[0] >= "u" and string[0] <= "z" and string.isalnum()
+    return string and string[0] >= "u" and string[0] <= "z" and string.isalnum()
 
 
 @lru_cache(maxsize=100)  # Cache the return value of is_function
@@ -86,7 +95,7 @@ def is_function(string: str) -> bool:
     Returns:
         ``True`` if the given string is a function name, ``False`` otherwise.
     """
-    return string[0] >= "f" and string[0] <= "t" and string.isalnum()
+    return string and string[0] >= "f" and string[0] <= "t" and string.isalnum()
 
 
 @frozen
@@ -113,11 +122,14 @@ class Term:
                 name.
         """
         if is_constant(root) or is_variable(root):
-            assert arguments is None
+            assert arguments is None, \
+                "Constants and variables cannot have arguments."
             self.root = root
+            self.arguments = None
         else:
-            assert is_function(root)
-            assert arguments is not None and len(arguments) > 0
+            assert is_function(root), f"Invalid function name: {root}"
+            assert arguments is not None and len(arguments) > 0, \
+                "Function must have non-empty arguments list."
             self.root = root
             self.arguments = tuple(arguments)
 
@@ -147,7 +159,7 @@ class Term:
             ``True`` if the given object is a `Term` object that equals the
             current term, ``False`` otherwise.
         """
-        return isinstance(other, Term) and str(self) == str(other)
+        return isinstance(other, Term) and repr(self) == repr(other)
 
     def __ne__(self, other: object) -> bool:
         """Compares the current term with the given one.
@@ -162,7 +174,21 @@ class Term:
         return not self == other
 
     def __hash__(self) -> int:
-        return hash(str(self))
+        return hash(repr(self))
+
+    @staticmethod
+    def _read_name_prefix(text: str) -> Tuple[str, str]:
+        """Extracts the longest prefix of `text` that is a valid name
+        (constant, variable, or function), returning (name, remainder)."""
+        end = 0
+        while end < len(text) and (
+                is_function(text[: end + 1])
+                or is_constant(text[: end + 1])
+                or is_variable(text[: end + 1])
+        ):
+            end += 1
+        assert end > 0, f"No valid name at prefix of: {text}"
+        return text[:end], text[end:]
 
     @staticmethod
     def _parse_prefix(string: str) -> Tuple[Term, str]:
@@ -179,34 +205,24 @@ class Term:
             that entire name (and not just a part of it, such as ``'x1'``).
         """
         # Task 7.3a
-        l = 0
-        while l < len(string) and (
-                is_function(string[: l + 1])
-                or is_constant(string[: l + 1])
-                or is_variable(string[: l + 1])
-        ):
-            l += 1
+        name, rest = Term._read_name_prefix(string)
 
-        assert l > 0
+        if is_constant(name) or is_variable(name):
+            return Term(name), rest
 
-        prefix, remainder = string[:l], string[l:]
-
-        if is_constant(prefix) or is_variable(prefix):
-            return Term(prefix), remainder
-
-        assert is_function(prefix) and remainder and remainder[0] == "("
-        remainder = remainder[1:]
-        arguments = []
+        # At this point, name must be a function
+        assert is_function(name) and rest and rest[0] == "(", "Malformed function application."
+        rest = rest[1:]  # skip '('
+        arguments: list[Term] = []
         while True:
-            arg, remainder = Term._parse_prefix(remainder)
+            arg, rest = Term._parse_prefix(rest)
             arguments.append(arg)
-            if remainder[0] == ")":
+            if rest[0] == ")":
                 break
-            assert remainder[0] == ","
-            remainder = remainder[1:]
-
-        assert remainder[0] == ")"
-        return Term(prefix, arguments), remainder[1:]
+            assert rest[0] == ",", "Expected ',' between function arguments."
+            rest = rest[1:]  # skip ','
+        # Skip closing ')'
+        return Term(name, arguments), rest[1:]
 
     @staticmethod
     def parse(string: str) -> Term:
@@ -220,6 +236,7 @@ class Term:
         """
         # Task 7.3b
         term, remainder = Term._parse_prefix(string)
+        assert remainder == "", f"Unexpected trailing characters in term: {remainder}"
         return term
 
     def constants(self) -> Set[str]:
@@ -235,7 +252,7 @@ class Term:
         if is_variable(self.root):
             return set()
 
-        assert is_function(self.root) and self.arguments is not None
+        # Function application
         return {c for arg in self.arguments for c in arg.constants()}
 
     def variables(self) -> Set[str]:
@@ -251,8 +268,8 @@ class Term:
         if is_variable(self.root):
             return {self.root}
 
-        assert is_function(self.root) and self.arguments is not None
-        return {var for arg in self.arguments for var in arg.variables()}
+        # Function application
+        return {v for arg in self.arguments for v in arg.variables()}
 
     def functions(self) -> Set[Tuple[str, int]]:
         """Finds all function names in the current term, along with their
@@ -266,10 +283,11 @@ class Term:
         if is_constant(self.root) or is_variable(self.root):
             return set()
 
-        assert is_function(self.root) and self.arguments is not None
-        return {(self.root, len(self.arguments))} | {
-            func for arg in self.arguments for func in arg.functions()
-        }
+        # Function application
+        func_set = {(self.root, len(self.arguments))}
+        for arg in self.arguments:
+            func_set |= arg.functions()
+        return func_set
 
     def substitute(
             self,
@@ -313,7 +331,20 @@ class Term:
             assert is_constant(construct) or is_variable(construct)
         for variable in forbidden_variables:
             assert is_variable(variable)
+
         # Task 9.1
+        if is_function(self.root):
+            new_args = [arg.substitute(substitution_map, forbidden_variables)
+                        for arg in self.arguments]
+            return Term(self.root, new_args)
+        elif self.root in substitution_map:
+            new_term = substitution_map[self.root]
+            bad_variables = new_term.variables() & forbidden_variables
+            if bad_variables:
+                raise ForbiddenVariableError(next(iter(bad_variables)))
+            return new_term
+        else:
+            return self
 
 
 @lru_cache(maxsize=100)  # Cache the return value of is_equality
@@ -440,11 +471,19 @@ class Formula:
                 assert len(arguments_or_first_or_variable) == 2
             assert second_or_statement is None
             self.root, self.arguments = root, tuple(arguments_or_first_or_variable)
+            self.first = None
+            self.second = None
+            self.variable = None
+            self.statement = None
         elif is_unary(root):
             # Populate self.first
             assert isinstance(arguments_or_first_or_variable, Formula)
             assert second_or_statement is None
             self.root, self.first = root, arguments_or_first_or_variable
+            self.arguments = None
+            self.second = None
+            self.variable = None
+            self.statement = None
         elif is_binary(root):
             # Populate self.first and self.second
             assert isinstance(arguments_or_first_or_variable, Formula)
@@ -454,7 +493,11 @@ class Formula:
                 arguments_or_first_or_variable,
                 second_or_statement,
             )
+            self.arguments = None
+            self.variable = None
+            self.statement = None
         else:
+            # Quantifier
             assert is_quantifier(root)
             # Populate self.variable and self.statement
             assert isinstance(arguments_or_first_or_variable, str) and is_variable(arguments_or_first_or_variable)
@@ -464,6 +507,9 @@ class Formula:
                 arguments_or_first_or_variable,
                 second_or_statement,
             )
+            self.arguments = None
+            self.first = None
+            self.second = None
 
     @memoized_parameterless_method
     def __repr__(self) -> str:
@@ -474,7 +520,7 @@ class Formula:
         """
         # Task 7.2
         if is_equality(self.root):
-            return f'{self.arguments[0]}={self.arguments[1]}'
+            return f"{self.arguments[0]}={self.arguments[1]}"
 
         if is_relation(self.root):
             return f"{self.root}({','.join(map(str, self.arguments))})"
@@ -500,7 +546,7 @@ class Formula:
             ``True`` if the given object is a `Formula` object that equals the
             current formula, ``False`` otherwise.
         """
-        return isinstance(other, Formula) and str(self) == str(other)
+        return isinstance(other, Formula) and repr(self) == repr(other)
 
     def __ne__(self, other: object) -> bool:
         """Compares the current formula with the given one.
@@ -515,7 +561,20 @@ class Formula:
         return not self == other
 
     def __hash__(self) -> int:
-        return hash(str(self))
+        return hash(repr(self))
+
+    @staticmethod
+    def _read_relation_prefix(text: str) -> Tuple[str, str]:
+        """Extracts the longest prefix of `text` that is a relation, unary,
+        or quantifier symbol, returning (prefix, remainder)."""
+        end = 0
+        while end < len(text) and (
+                is_relation(text[: end + 1])
+                or is_unary(text[: end + 1])
+                or is_quantifier(text[: end + 1])
+        ):
+            end += 1
+        return text[:end], text[end:]
 
     @staticmethod
     def _parse_prefix(string: str) -> Tuple[Formula, str]:
@@ -533,63 +592,59 @@ class Formula:
             that entire name (and not just a part of it, such as ``'f(y)=x1'``).
         """
         # Task 7.4a
-        prefix_len = 0
-        while prefix_len < len(string) and (
-                is_relation(string[: prefix_len + 1])
-                or is_unary(string[: prefix_len + 1])
-                or is_quantifier(string[: prefix_len + 1])
-        ):
-            prefix_len += 1
 
-        if prefix_len:
-            prefix, remainder = string[:prefix_len], string[prefix_len:]
-            if is_relation(prefix):
-                assert remainder[0] == "("
-                remainder = remainder[1:]
-                args = []
-                while remainder[0] != ")":
-                    arg, remainder = Term._parse_prefix(remainder)
+        # Attempt to read a relation, unary operator, or quantifier prefix
+        prefix_symbol, rem = Formula._read_relation_prefix(string)
+        if prefix_symbol:
+            if is_relation(prefix_symbol):
+                assert rem and rem[0] == "(", "Relation must be followed by '('."
+                rem = rem[1:]  # skip '('
+                args: list[Term] = []
+                while rem[0] != ")":
+                    arg, rem = Term._parse_prefix(rem)
                     args.append(arg)
-                    if remainder[0] == ",":
-                        remainder = remainder[1:]
+                    if rem[0] == ",":
+                        rem = rem[1:]
                     else:
-                        assert remainder[0] == ")"
-                return Formula(prefix, args), remainder[1:]
+                        assert rem[0] == ")", "Expected ')' after relation arguments."
+                return Formula(prefix_symbol, args), rem[1:]
 
-            if is_unary(prefix):
-                first, remainder = Formula._parse_prefix(remainder)
-                return Formula(prefix, first), remainder
+            if is_unary(prefix_symbol):
+                first_subformula, rem_after = Formula._parse_prefix(rem)
+                return Formula(prefix_symbol, first_subformula), rem_after
 
-            # quantifier
-            assert is_quantifier(prefix)
-            quant, rem = prefix, remainder
+            # Quantifier
+            assert is_quantifier(prefix_symbol)
+            quant = prefix_symbol
             var_len = 0
             while var_len < len(rem) and is_variable(rem[: var_len + 1]):
                 var_len += 1
-            assert var_len > 0 and rem[var_len] == "["
-            variable, rem = rem[:var_len], rem[var_len + 1:]
-            statement, rem = Formula._parse_prefix(rem)
-            assert rem[0] == "]"
-            return Formula(quant, variable, statement), rem[1:]
+            assert var_len > 0 and rem[var_len] == "[", "Quantifier must be followed by a variable and '['."
+            variable = rem[:var_len]
+            rem_after = rem[var_len + 1:]  # skip variable and '['
+            statement_subformula, rem_after = Formula._parse_prefix(rem_after)
+            assert rem_after and rem_after[0] == "]", "Quantifier statement must end with ']'."
+            return Formula(quant, variable, statement_subformula), rem_after[1:]
 
-        # binary or equality
+        # If not relation/unary/quantifier, must be binary or equality
         if string[0] == "(":
-            rem = string[1:]
-            first, rem = Formula._parse_prefix(rem)
-            op_len = 0
-            while op_len < len(rem) and is_binary_prefix(rem[: op_len + 1]):
-                op_len += 1
-            assert op_len > 0
-            oper, rem2 = rem[:op_len], rem[op_len:]
-            second, rem = Formula._parse_prefix(rem2)
-            assert rem[0] == ")"
-            return Formula(oper, first, second), rem[1:]
+            rem = string[1:]  # skip '('
+            first_subformula, rem_after = Formula._parse_prefix(rem)
+            op_end = 0
+            while op_end < len(rem_after) and is_binary_prefix(rem_after[: op_end + 1]):
+                op_end += 1
+            assert op_end > 0, "Missing binary operator in parentheses."
+            operator = rem_after[:op_end]
+            rem_after2 = rem_after[op_end:]
+            second_subformula, rem_final = Formula._parse_prefix(rem_after2)
+            assert rem_final and rem_final[0] == ")", "Binary formula must end with ')'."
+            return Formula(operator, first_subformula, second_subformula), rem_final[1:]
 
-        # equality
-        first, rem = Term._parse_prefix(string)
-        assert rem[0] == "="
-        second, rem = Term._parse_prefix(rem[1:])
-        return Formula("=", (first, second)), rem
+        # Otherwise, it must be an equality without surrounding parentheses
+        first_term, rem_term = Term._parse_prefix(string)
+        assert rem_term and rem_term[0] == "=", "Equality must contain '='."
+        second_term, rem_after = Term._parse_prefix(rem_term[1:])
+        return Formula("=", (first_term, second_term)), rem_after
 
     @staticmethod
     def parse(string: str) -> Formula:
@@ -603,7 +658,7 @@ class Formula:
         """
         # Task 7.4b
         formula, remainder = Formula._parse_prefix(string)
-        assert remainder == ""
+        assert remainder == "", f"Unexpected trailing characters in formula: {remainder}"
         return formula
 
     def constants(self) -> Set[str]:
@@ -614,12 +669,10 @@ class Formula:
         """
         # Task 7.6a
         if is_equality(self.root):
-            # equality has exactly two arguments
             return self.arguments[0].constants() | self.arguments[1].constants()
 
         if is_relation(self.root):
             assert self.arguments is not None
-            # collect constants from all relation arguments
             return {c for arg in self.arguments for c in arg.constants()}
 
         if is_unary(self.root):
@@ -630,7 +683,7 @@ class Formula:
             assert self.first is not None and self.second is not None
             return self.first.constants() | self.second.constants()
 
-        # quantifier case
+        # Quantifier case
         assert is_quantifier(self.root)
         assert self.statement is not None
         return self.statement.constants()
@@ -790,7 +843,52 @@ class Formula:
             assert is_constant(construct) or is_variable(construct)
         for variable in forbidden_variables:
             assert is_variable(variable)
+
         # Task 9.2
+        if is_equality(self.root) or is_relation(self.root):
+            f = lambda t: t.substitute(substitution_map, forbidden_variables)
+            return Formula(self.root, [*map(f, self.arguments)])  # type: ignore
+        elif is_unary(self.root):
+            return Formula(
+                self.root,
+                self.first.substitute(substitution_map, forbidden_variables)  # type: ignore
+            )
+        elif is_binary(self.root):
+            return Formula(
+                self.root,
+                self.first.substitute(substitution_map, forbidden_variables),  # type: ignore
+                self.second.substitute(substitution_map, forbidden_variables)  # type: ignore
+            )
+        else:
+            # Quantifier case
+            assert is_quantifier(self.root)
+            substitution_map_copy = dict(substitution_map)
+            if self.variable in substitution_map_copy:
+                del substitution_map_copy[self.variable]
+            return Formula(
+                self.root, self.variable,
+                self.statement.substitute(substitution_map_copy, forbidden_variables | {self.variable})  # type: ignore
+            )
+
+    def _propositional_skeleton(
+            self,
+            mappings: dict[str, Formula],
+            reverse_mappings: dict[Formula, str]
+    ) -> PropositionalFormula:
+        if is_unary(self.root):
+            new_first = self.first._propositional_skeleton(mappings, reverse_mappings)  # type: ignore
+            return PropositionalFormula(self.root, new_first)
+        elif is_binary(self.root):
+            new_first = self.first._propositional_skeleton(mappings, reverse_mappings)  # type: ignore
+            new_second = self.second._propositional_skeleton(mappings, reverse_mappings)  # type: ignore
+            return PropositionalFormula(self.root, new_first, new_second)
+
+        # Relation, equality, or quantifier => propositional variable
+        if self not in reverse_mappings:
+            new_var = next(fresh_variable_name_generator)
+            mappings[new_var] = self
+            reverse_mappings[self] = new_var
+        return PropositionalFormula(reverse_mappings[self])
 
     def propositional_skeleton(
             self,
@@ -817,10 +915,16 @@ class Formula:
             >>> formula.propositional_skeleton()
             (((z4&z5)|(~z6->z5)), {'z4': Ax[x=7], 'z5': x=7, 'z6': Q(y)})
         """
-        # Task 9.8
+        mappings: dict[str, Formula] = {}
+        reverse_mappings: dict[Formula, str] = {}
+        skeleton = self._propositional_skeleton(mappings, reverse_mappings)
+        return skeleton, mappings
 
     @staticmethod
-    def from_propositional_skeleton(skeleton: PropositionalFormula, substitution_map: Mapping[str, Formula]) -> Formula:
+    def from_propositional_skeleton(
+            skeleton: PropositionalFormula,
+            substitution_map: Mapping[str, Formula]
+    ) -> Formula:
         """Computes a predicate-logic formula from a propositional skeleton and
         a substitution map.
 
@@ -853,4 +957,13 @@ class Formula:
             assert is_unary(operator) or is_binary(operator)
         for variable in skeleton.variables():
             assert variable in substitution_map
+
         # Task 9.10
+        if is_unary(skeleton.root):
+            new_first = Formula.from_propositional_skeleton(skeleton.first, substitution_map)  # type: ignore
+            return Formula(skeleton.root, new_first)
+        elif is_binary(skeleton.root):
+            new_first = Formula.from_propositional_skeleton(skeleton.first, substitution_map)  # type: ignore
+            new_second = Formula.from_propositional_skeleton(skeleton.second, substitution_map)  # type: ignore
+            return Formula(skeleton.root, new_first, new_second)
+        return substitution_map[skeleton.root]
